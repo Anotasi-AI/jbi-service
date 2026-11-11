@@ -52,8 +52,8 @@ services:
       KAFKA_LOG_SEGMENT_BYTES: 1073741824
       KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 300000
       CLUSTER_ID: fMyPq6lKSAy7zr3N3d4mNw
-    ports:
-      - "9092:9092"
+    # Port 9092 sengaja tidak dipublikasikan ke host: broker pernah terjangkau
+    # dari internet. Antar-container cukup lewat kafka:9092 di jaringan compose.
     volumes:
       - kafka_data:/var/lib/kafka/data
     healthcheck:
@@ -69,15 +69,25 @@ services:
         max-file: "5"
     restart: unless-stopped
 
-  # ── Kafka UI (Optional) ──────────────────────────────────
+  # ── Kafbat UI (Optional) ─────────────────────────────────
+  # Pengganti provectuslabs/kafka-ui yang tidak lagi dipelihara dan punya
+  # celah RCE (filter Groovy). Kafbat adalah fork aktifnya.
+  # - Image dipin ke digest agar tidak berubah diam-diam; perbarui dengan sengaja.
+  # - Hanya bind ke 127.0.0.1. Akses dari luar lewat SSH tunnel:
+  #     ssh -L 8080:127.0.0.1:8080 <server>   lalu buka http://localhost:8080
+  # - Login wajib. Isi KAFKA_UI_USERNAME dan KAFKA_UI_PASSWORD di .env
+  #   (lihat .env.example). Tanpa keduanya, compose berhenti dengan pesan galat.
   kafka-ui:
-    image: provectuslabs/kafka-ui:latest
+    image: ghcr.io/kafbat/kafka-ui@sha256:7cda86a33344160309fdb65146332e4da65db81a945614f2fe32e210803f6fd1
     profiles: ["cpu", "gpu", "dev"]
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: jbi-pipeline
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      AUTH_TYPE: LOGIN_FORM
+      SPRING_SECURITY_USER_NAME: ${KAFKA_UI_USERNAME:?isi KAFKA_UI_USERNAME di .env}
+      SPRING_SECURITY_USER_PASSWORD: ${KAFKA_UI_PASSWORD:?isi KAFKA_UI_PASSWORD di .env}
     depends_on:
       kafka:
         condition: service_healthy
