@@ -58,8 +58,7 @@ class VoiceAnnotationService:
             logger.warning("No transcripts found for job %s — skipping voice annotation init", job_id)
             return {"job_id": str(job_id), "total": 0, "clean": 0, "flagged": 0}
 
-        clean_count = 0
-        flagged_count = 0
+        created_count = 0
 
         for transcript in all_transcripts:
             # Check if voice annotation already exists
@@ -90,33 +89,30 @@ class VoiceAnnotationService:
             )
             self.db.add(va)
 
-            if has_flag:
-                flagged_count += 1
-            else:
-                clean_count += 1
-
-        # Update job counters only (status is managed by CV2 / update_ground_truth)
-        await self.db.execute(
-            update(PipelineJob)
-            .where(PipelineJob.id == job_id)
-            .values(
-                clean_utterance_count=clean_count,
-                flagged_utterance_count=flagged_count,
-            )
-        )
+            created_count += 1
 
         await self.db.flush()
 
+        # The quality gate is complete as soon as every voice annotation is
+        # clean. Initialisation used to update only the counters, leaving an
+        # all-clean job in NEEDS_VOICE_ANNOTATION until somebody edited an
+        # utterance. That made the job invisible to the assignment endpoint,
+        # which correctly lists READY_FOR_ANNOTATION jobs only. Recalculate
+        # from persisted rows so this is also safe to run again for an
+        # existing job (where no new rows are created).
+        job_summary = await self._recalculate_job_status(job_id)
+
         logger.info(
-            "Voice annotation init for job %s: %d clean, %d flagged",
-            job_id, clean_count, flagged_count,
+            "Voice annotation init for job %s: %d clean, %d flagged (%d new rows)",
+            job_id, job_summary["clean"], job_summary["flagged"], created_count,
         )
 
         return {
             "job_id": str(job_id),
-            "total": clean_count + flagged_count,
-            "clean": clean_count,
-            "flagged": flagged_count,
+            "total": job_summary["clean"] + job_summary["flagged"],
+            "clean": job_summary["clean"],
+            "flagged": job_summary["flagged"],
+            "status": job_summary["status"],
         }
 
     # ── Read operations ─────────────────────────────────────────────
