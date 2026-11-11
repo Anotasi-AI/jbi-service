@@ -326,7 +326,7 @@ async def reassign_job_to_annotator(
 async def get_job_assignments(
     status: Optional[str] = Query(None, description="Filter by job status"),
     dataset_id: Optional[str] = Query(None, description="Filter by dataset ID"),
-    limit: int = Query(50, ge=1, le=100),
+    limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
     current_user: CurrentUser = Depends(require_admin)
@@ -340,6 +340,7 @@ async def get_job_assignments(
     from sqlalchemy import func, select, distinct
     from app.db.models.auth import User
     from app.db.models.pipeline import PipelineJob, JobStatus
+    from app.db.models.dataset import Dataset
     
     # Build base filters
     base_filters = [PipelineJob.status == JobStatus.READY_FOR_ANNOTATION]
@@ -353,7 +354,12 @@ async def get_job_assignments(
         base_filters.append(PipelineJob.dataset_id == dataset_uuid)
     
     # Base query: jobs that are ready for annotation
-    base_query = select(PipelineJob).where(*base_filters)
+    # Joined with datasets so every row can show which dataset it belongs to.
+    base_query = (
+        select(PipelineJob, Dataset.name.label("dataset_name"))
+        .outerjoin(Dataset, Dataset.id == PipelineJob.dataset_id)
+        .where(*base_filters)
+    )
     
     # Count total
     count_query = select(func.count(PipelineJob.id)).where(*base_filters)
@@ -364,15 +370,16 @@ async def get_job_assignments(
     # Get paginated jobs
     jobs_result = await db.execute(
         base_query
-        .order_by(PipelineJob.created_at.desc())
+        # id as tie-breaker keeps offset paging stable when created_at is equal
+        .order_by(PipelineJob.created_at.desc(), PipelineJob.id)
         .offset(offset)
         .limit(limit)
     )
-    jobs = jobs_result.scalars().all()
+    job_rows = jobs_result.all()
     
     # Build assignment info for each job
     items = []
-    for job in jobs:
+    for job, dataset_name in job_rows:
         # Find segments of this job and their queue assignments
         segment_query = (
             select(
@@ -422,6 +429,8 @@ async def get_job_assignments(
             "original_filename": job.original_filename,
             "status": job.status,
             "category": job.category,
+            "dataset_id": str(job.dataset_id) if job.dataset_id else None,
+            "dataset_name": dataset_name,
             "created_at": job.created_at.isoformat() if job.created_at else None,
             "total_segments": total_segments,
             "assigned_segments": assigned_segments,
